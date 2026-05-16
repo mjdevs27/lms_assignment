@@ -1,0 +1,151 @@
+import mongoose, { FilterQuery, SortOrder } from 'mongoose';
+import Loan from '../models/Loan.model';
+import { ILoan } from '../types/loan.types';
+import { ApiError } from '../utils/ApiError';
+import { LOAN_STATUS } from '../constants/loan.constants';
+import { getSkip, getTotalPages } from '../utils/pagination.util';
+import {
+  DisbursementLoanSummary,
+  DisbursementLoansQuery,
+  DisburseInput,
+  PaginationMeta,
+} from '../types/disbursement.types';
+
+const ALLOWED_SORT_FIELDS: Record<string, string> = {
+  sanctionedAt: 'sanctionedAt',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt',
+  loanAmount: 'loanAmount',
+  fullName: 'fullName',
+};
+
+const sanitizeLoan = (loan: ILoan): DisbursementLoanSummary => ({
+  id: loan._id.toString(),
+  borrowerId: loan.borrowerId.toString(),
+  fullName: loan.fullName,
+  pan: loan.pan,
+  monthlySalary: loan.monthlySalary,
+  employmentMode: loan.employmentMode,
+  salarySlipUrl: loan.salarySlipUrl,
+  loanAmount: loan.loanAmount,
+  tenureDays: loan.tenureDays,
+  interestRate: loan.interestRate,
+  interestAmount: loan.interestAmount,
+  totalRepayment: loan.totalRepayment,
+  outstandingAmount: loan.outstandingAmount,
+  status: 'SANCTIONED',
+  sanctionedBy: loan.sanctionedBy?.toString(),
+  sanctionedAt: loan.sanctionedAt,
+  sanctionRemarks: loan.sanctionRemarks,
+  createdAt: loan.createdAt,
+  updatedAt: loan.updatedAt,
+});
+
+export const getSanctionedLoans = async (
+  query: DisbursementLoansQuery,
+): Promise<{ loans: DisbursementLoanSummary[]; pagination: PaginationMeta }> => {
+  const page = Number(query.page ?? 1) || 1;
+  const limit = Number(query.limit ?? 10) || 10;
+  const sortField = ALLOWED_SORT_FIELDS[String(query.sortBy ?? 'sanctionedAt')] ?? 'sanctionedAt';
+  const sortOrder: SortOrder = String(query.sortOrder ?? 'desc') === 'asc' ? 1 : -1;
+
+  const filter: FilterQuery<ILoan> = { status: LOAN_STATUS.SANCTIONED };
+
+  if (query.search && typeof query.search === 'string' && query.search.trim()) {
+    const escaped = query.search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(escaped, 'i');
+    filter.$or = [{ fullName: regex }, { pan: regex }];
+  }
+
+  if (query.minAmount !== undefined && query.minAmount !== '') {
+    const min = Number(query.minAmount);
+    if (!isNaN(min)) {
+      filter.loanAmount = { ...((filter.loanAmount as object) ?? {}), $gte: min };
+    }
+  }
+
+  if (query.maxAmount !== undefined && query.maxAmount !== '') {
+    const max = Number(query.maxAmount);
+    if (!isNaN(max)) {
+      filter.loanAmount = { ...((filter.loanAmount as object) ?? {}), $lte: max };
+    }
+  }
+
+  const total = await Loan.countDocuments(filter);
+  const skip = getSkip(page, limit);
+
+  const loans = await Loan.find(filter)
+    .sort({ [sortField]: sortOrder })
+    .skip(skip)
+    .limit(limit);
+
+  return {
+    loans: loans.map(sanitizeLoan),
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages: getTotalPages(total, limit),
+    },
+  };
+};
+
+export const getSanctionedLoanById = async (loanId: string): Promise<DisbursementLoanSummary> => {
+  const loan = await Loan.findById(loanId);
+
+  if (!loan) {
+    throw new ApiError(404, 'Loan not found.');
+  }
+
+  if (loan.status !== LOAN_STATUS.SANCTIONED) {
+    throw new ApiError(
+      409,
+      `Loan is not in SANCTIONED state. Current status: ${loan.status}.`,
+    );
+  }
+
+  return sanitizeLoan(loan);
+};
+
+export const disburseSanctionedLoan = async (
+  loanId: string,
+  actorUserId: string,
+  input: DisburseInput,
+): Promise<{ id: string; status: string; disbursedAt: Date }> => {
+  const setFields: Record<string, unknown> = {
+    status: LOAN_STATUS.DISBURSED,
+    disbursedBy: new mongoose.Types.ObjectId(actorUserId),
+    disbursedAt: new Date(),
+  };
+
+  if (input.remarks) {
+    setFields.disbursementRemarks = input.remarks;
+  }
+
+  if (input.disbursementReference) {
+    setFields.disbursementReference = input.disbursementReference;
+  }
+
+  const updated = await Loan.findOneAndUpdate(
+    { _id: new mongoose.Types.ObjectId(loanId), status: LOAN_STATUS.SANCTIONED },
+    { $set: setFields },
+    { new: true },
+  );
+
+  if (!updated) {
+    const existing = await Loan.findById(loanId);
+    if (!existing) {
+      throw new ApiError(404, 'Loan not found.');
+    }
+    throw new ApiError(
+      409,
+      `Loan cannot be disbursed. Current status: ${existing.status}.`,
+    );
+  }
+
+  return {
+    id: updated._id.toString(),
+    status: updated.status,
+    disbursedAt: updated.disbursedAt!,
+  };
+};
