@@ -1,0 +1,23 @@
+
+export const USER_ROLES = {
+  ADMIN: 'ADMIN',
+  SALES: 'SALES',
+  SANCTION: 'SANCTION',
+  DISBURSEMENT: 'DISBURSEMENT',
+  COLLECTION: 'COLLECTION',
+  BORROWER: 'BORROWER',
+} as const;
+
+export type UserRole = (typeof USER_ROLES)[keyof typeof USER_ROLES];
+
+
+export const USER_ROLE_VALUES: UserRole[] = Object.values(USER_ROLES);
+
+
+export const DASHBOARD_ROLES: UserRole[] = [
+  USER_ROLES.ADMIN,
+  USER_ROLES.SALES,
+  USER_ROLES.SANCTION,
+  USER_ROLES.DISBURSEMENT,
+  USER_ROLES.COLLECTION,
+];
